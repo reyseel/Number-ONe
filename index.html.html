@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NumberOne – Mint</title>
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu;max-width:720px;margin:40px auto;padding:0 16px}
+    .card{border:1px solid #ddd;border-radius:16px;padding:20px;box-shadow:0 2px 8px rgba(0,0,0,.05)}
+    button{padding:10px 16px;border:0;border-radius:10px;cursor:pointer}
+    .primary{background:#111;color:#fff}
+    .muted{color:#666}
+    input[type="number"]{width:80px;padding:8px;border:1px solid #ccc;border-radius:8px}
+    .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+    .ok{color:#0a7d28}
+    .warn{color:#b30d0d}
+    .mono{font-family:ui-monospace, Menlo, Monaco, Consolas, 'Courier New', monospace}
+    .small{font-size:12px}
+    .hidden{display:none}
+  </style>
+</head>
+<body>
+  <h1>NumberOne – Public Mint</h1>
+  <p class="muted small">Tip: Open this file via <b>http://localhost</b> (not file://). In a terminal: <code class="mono">python3 -m http.server</code></p>
+  <p class="muted">Optimism Mainnet • Contract: <span id="addr" class="mono">0xD80d90ECC2aAd130D3e6568BABE300eFeD8FE0B6</span></p>
+  <div class="card">
+    <p id="network" class="muted">• Wallet: <span id="wallet">Not connected</span></p>
+    <p>Price: <b id="price">–</b> ETH &nbsp;•&nbsp; Max / wallet: <b id="cap">–</b> • Status: <b id="status">–</b></p>
+    <div class="row">
+      <button id="connect">Connect Wallet</button>
+      <label>Qty <input id="qty" type="number" min="1" value="1"></label>
+      <button id="mint" class="primary">Mint</button>
+    </div>
+    <p id="msg" class="muted"></p>
+  </div>
+
+<script src="https://cdn.jsdelivr.net/npm/ethers@5.7.2/dist/ethers.umd.min.js"></script>
+<script>
+const CONTRACT_ADDRESS = "0xD80d90ECC2aAd130D3e6568BABE300eFeD8FE0B6";
+const ABI = [
+  {"inputs":[{"internalType":"uint256","name":"quantity","type":"uint256"}],"name":"mintPublic","outputs":[],"stateMutability":"payable","type":"function"},
+  {"inputs":[],"name":"mintPrice","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},
+  {"inputs":[],"name":"maxPerWallet","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},
+  {"inputs":[],"name":"paused","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"view","type":"function"}
+];
+
+const OP = {
+  chainId: "0xA",
+  chainName: "Optimism",
+  nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+  rpcUrls: ["https://mainnet.optimism.io"],
+  blockExplorerUrls: ["https://optimistic.etherscan.io"]
+};
+
+let provider, signer, contract;
+
+function fmtEth(wei){ return (window.ethers && wei) ? ethers.utils.formatEther(wei) : "0"; }
+
+function showMsg(html, cls){
+  const el = document.getElementById("msg");
+  el.className = "muted " + (cls || "");
+  el.innerHTML = html;
+}
+
+async function ensureProvider(){
+  if (!window.ethereum){
+    showMsg("MetaMask was not detected. Install it from <a href='https://metamask.io' target='_blank'>metamask.io</a>.", "warn");
+    throw new Error("No MetaMask");
+  }
+  provider = new ethers.providers.Web3Provider(window.ethereum, "any");
+  return provider;
+}
+
+async function ensureOP(){
+  const net = await provider.getNetwork();
+  if (net.chainId !== 10){
+    try{
+      await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: OP.chainId }] });
+    }catch(err){
+      // If Optimism isn't added yet
+      if (err && err.code === 4902){
+        await window.ethereum.request({ method: "wallet_addEthereumChain", params: [OP] });
+      }else{
+        throw err;
+      }
+    }
+  }
+}
+
+async function connect(){
+  try{
+    await ensureProvider();
+    await ensureOP();
+    await provider.send("eth_requestAccounts", []);
+    signer = provider.getSigner();
+    const addr = await signer.getAddress();
+    document.getElementById("wallet").textContent = addr;
+    contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, signer);
+    await refreshInfo();
+    showMsg("Wallet connected.", "ok");
+  }catch(e){
+    console.error(e);
+    showMsg("Connect error: " + (e?.message || e), "warn");
+  }
+}
+
+async function refreshInfo(){
+  if (!contract) return;
+  try{
+    const [price, cap, paused] = await Promise.all([
+      contract.mintPrice(),
+      contract.maxPerWallet(),
+      contract.paused()
+    ]);
+    document.getElementById("price").textContent = fmtEth(price);
+    document.getElementById("cap").textContent = cap.toString();
+    document.getElementById("status").textContent = paused ? "Paused" : "Live";
+  }catch(e){
+    console.error(e);
+    showMsg("Read error: " + (e?.message || e), "warn");
+  }
+}
+
+async function mint(){
+  if (!contract){ showMsg("Please connect your wallet first.", "warn"); return; }
+  const qty = parseInt(document.getElementById("qty").value || "1", 10);
+  if (qty <= 0){ showMsg("Quantity must be >= 1.", "warn"); return; }
+  try{
+    const price = await contract.mintPrice();
+    const total = price.mul(qty);
+    showMsg("Sending transaction...", "");
+    const tx = await contract.mintPublic(qty, { value: total });
+    showMsg("Waiting for confirmation...", "");
+    await tx.wait();
+    showMsg("Success! Tx: <a target='_blank' href='https://optimistic.etherscan.io/tx/"+tx.hash+"'>"+tx.hash+"</a>", "ok");
+  }catch(e){
+    console.error(e);
+    showMsg("Mint error: " + (e?.message || e), "warn");
+  }
+}
+
+document.getElementById("connect").addEventListener("click", connect);
+document.getElementById("mint").addEventListener("click", mint);
+</script>
+</body>
+</html>
